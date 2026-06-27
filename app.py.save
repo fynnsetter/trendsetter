@@ -1,0 +1,491 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+import numpy as np
+import os
+import json
+import re
+import requests
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from agents import TechnicalAgent, FundamentalAgent, SentimentAgent, Orchestrator
+
+load_dotenv()
+
+st.set_page_config(
+    page_title="TrendSetter",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# =====================================================
+# SESSION STATE
+# =====================================================
+if "selected_ticker" not in st.session_state:
+    st.session_state.selected_ticker = "NVDA"
+
+# =====================================================
+# WATCHLIST FUNCTIONS
+# =====================================================
+
+WATCHLIST_FILE = 'watchlist.json'
+
+def load_watchlist():
+    if os.path.exists(WATCHLIST_FILE):
+        try:
+            with open(WATCHLIST_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return ["NVDA", "AAPL", "GOOGL", "TSLA"]
+    return ["NVDA", "AAPL", "GOOGL", "TSLA"]
+
+def save_watchlist(wlist):
+    with open(WATCHLIST_FILE, 'w') as f:
+        json.dump(wlist, f)
+
+# =====================================================
+# GOOGLE FONTS + CUSTOM CSS
+# =====================================================
+
+st.markdown("""
+<link href="https://fonts.googleapis.com/css2?family=Merriweather:wght@700;900&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+<style>
+    /* Font variables */
+    :root {
+        --font-logo: 'Merriweather', serif;
+        --font-body: 'Montserrat', sans-serif;
+        --primary: #00D4AA;
+        --secondary: #1A1A2E;
+        --text-light: #CCD6F6;
+        --text-muted: #8892B0;
+        --border-color: #233;
+    }
+    
+    /* Logo styling */
+    .logo-text {
+        font-family: 'Merriweather', serif;
+        font-weight: 900;
+        font-size: 2.2rem;
+        color: #00D4AA;
+        text-align: center;
+        letter-spacing: -0.5px;
+        line-height: 1.2;
+    }
+    .logo-sub {
+        font-family: 'Montserrat', sans-serif;
+        font-weight: 300;
+        font-size: 0.75rem;
+        color: #8892B0;
+        text-align: center;
+        letter-spacing: 3px;
+        text-transform: uppercase;
+        margin-top: 2px;
+    }
+    
+    /* Sidebar logo */
+    .sidebar-logo {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0.5rem 0 0.25rem 0;
+        margin-left: -4px;
+    }
+    .sidebar-logo-icon {
+        font-size: 1.5rem;
+    }
+    .sidebar-logo-text {
+        font-family: 'Merriweather', serif;
+        font-weight: 700;
+        font-size: 1.1rem;
+        color: #00D4AA;
+        letter-spacing: -0.5px;
+        line-height: 1.2;
+    }
+    .sidebar-logo-sub {
+        font-family: 'Montserrat', sans-serif;
+        font-weight: 300;
+        font-size: 0.5rem;
+        color: #8892B0;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        margin-top: -2px;
+    }
+    
+    /* Cards */
+    .metric-card {
+        background: #1A1A2E;
+        padding: 1.5rem;
+        border-radius: 12px;
+        border: 1px solid #233;
+        margin-bottom: 1rem;
+        transition: all 0.3s ease;
+    }
+    .metric-card:hover {
+        border-color: #00D4AA;
+        transform: translateY(-2px);
+    }
+    .metric-value {
+        font-family: 'Merriweather', serif;
+        font-size: 2rem;
+        font-weight: 700;
+        color: #FFFFFF;
+    }
+    .metric-label {
+        font-family: 'Montserrat', sans-serif;
+        font-size: 0.7rem;
+        color: #8892B0;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    
+    /* Agent cards */
+    .agent-card {
+        background: #1A1A2E;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 3px solid #00D4AA;
+        height: 100%;
+        transition: all 0.3s ease;
+    }
+    .agent-card:hover {
+        border-color: #00D4AA;
+    }
+    .agent-title {
+        font-family: 'Montserrat', sans-serif;
+        font-weight: 600;
+        font-size: 1rem;
+        margin-bottom: 0.5rem;
+    }
+    .agent-score {
+        font-family: 'Merriweather', serif;
+        font-size: 1.2rem;
+        font-weight: 700;
+    }
+    .agent-explain {
+        font-family: 'Montserrat', sans-serif;
+        font-size: 0.85rem;
+        color: #CCD6F6;
+        line-height: 1.5;
+    }
+    .agent-reasons {
+        font-family: 'Montserrat', sans-serif;
+        font-size: 0.75rem;
+        color: #8892B0;
+        margin-top: 0.5rem;
+    }
+    
+    /* Status indicators */
+    .status-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
+    }
+    .status-dot.active { background: #00D4AA; }
+    .status-dot.inactive { background: #EB5757; }
+    
+    /* Footer */
+    .footer {
+        text-align: center;
+        color: #8892B0;
+        font-family: 'Montserrat', sans-serif;
+        font-size: 0.8rem;
+        padding: 2rem 0 1rem 0;
+        border-top: 1px solid #233;
+        margin-top: 2rem;
+    }
+    
+    /* Tabs - Rounded rectangle style */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0.5rem;
+        background-color: #1A1A2E;
+        padding: 0.5rem;
+        border-radius: 12px;
+        border: 1px solid #233;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Montserrat', sans-serif;
+        color: #8892B0;
+        font-weight: 500;
+        padding: 0.5rem 1.5rem;
+        border-radius: 8px;
+        background-color: transparent;
+        transition: all 0.2s ease;
+        border: none !important;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: #CCD6F6;
+        background-color: rgba(255,255,255,0.05);
+    }
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {
+        color: #00D4AA;
+        background-color: #233;
+        border: none !important;
+    }
+    
+    .holding-card {
+        background: #1A1A2E;
+        padding: 1rem;
+        border-radius: 10px;
+        border: 1px solid #233;
+        margin-bottom: 0.5rem;
+        transition: all 0.3s ease;
+    }
+    .holding-card:hover {
+        border-color: #00D4AA;
+    }
+    .scanner-card {
+        background: #1A1A2E;
+        padding: 1rem;
+        border-radius: 10px;
+        border: 1px solid #233;
+        margin-bottom: 0.5rem;
+    }
+    .positive { color: #00D4AA; }
+    .negative { color: #EB5757; }
+    
+    /* Quick stats row */
+    .stat-item {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        margin: 0 0.25rem;
+        background: #1A1A2E;
+        border-radius: 8px;
+        border: 1px solid #233;
+        text-align: center;
+        min-width: 80px;
+    }
+    .stat-value {
+        font-weight: 700;
+        color: #FFFFFF;
+        font-size: 1rem;
+    }
+    .stat-label {
+        font-size: 0.6rem;
+        color: #8892B0;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+popular_stocks = {
+    "AAPL": "Apple Inc.", "MSFT": "Microsoft Corp.", "GOOGL": "Alphabet Inc.",
+    "NVDA": "NVIDIA Corp.", "AMZN": "Amazon.com Inc.", "META": "Meta Platforms Inc.",
+    "TSLA": "Tesla Inc.", "JPM": "JPMorgan Chase & Co.", "VTI": "Vanguard Total Stock Market",
+    "SPY": "S&P 500 ETF", "VOO": "Vanguard S&P 500 ETF", "QQQ": "Invesco QQQ Trust",
+    "BRK.B": "Berkshire Hathaway", "UNH": "UnitedHealth Group", "XOM": "Exxon Mobil Corp.",
+    "JNJ": "Johnson & Johnson", "WMT": "Walmart Inc.", "PG": "Procter & Gamble",
+    "MA": "Mastercard Inc.", "HD": "Home Depot Inc.", "BAC": "Bank of America",
+    "DIS": "Walt Disney Co.", "NFLX": "Netflix Inc.", "ADBE": "Adobe Inc.",
+    "AMD": "Advanced Micro Devices", "INTC": "Intel Corp.", "PFE": "Pfizer Inc.",
+    "COST": "Costco Wholesale", "CVX": "Chevron Corp.", "MRK": "Merck & Co.",
+    "ABBV": "AbbVie Inc.", "NKE": "Nike Inc.", "MCD": "McDonald's Corp.",
+    "F": "Ford Motor Co.", "GM": "General Motors Co.", "BA": "Boeing Co.",
+    "UBER": "Uber Technologies Inc.", "LYFT": "Lyft Inc.", "RIVN": "Rivian Automotive Inc."
+}
+
+PORTFOLIO_FILE = 'portfolio_data.json'
+
+def load_portfolio():
+    if os.path.exists(PORTFOLIO_FILE):
+        with open(PORTFOLIO_FILE, 'r') as f:
+            return json.load(f)
+    return {'holdings': [], 'cash': 10000, 'transactions': []}
+
+def save_portfolio(portfolio):
+    with open(PORTFOLIO_FILE, 'w') as f:
+        json.dump(portfolio, f, indent=2)
+
+def get_stock_price(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        data = stock.history(period='1d')
+        if not data.empty:
+            return data['Close'].iloc[-1]
+    except:
+        return None
+    return None
+
+def calc_rsi(data, window=14):
+    if len(data) < window:
+        return 50
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    if loss.iloc[-1] == 0:
+        return 50
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    if pd.isna(rsi.iloc[-1]):
+        return 50
+    return rsi.iloc[-1]
+
+def safe_get_price(data, index):
+    try:
+        if len(data) > abs(index):
+            return data.iloc[index]
+        return data.iloc[-1] if len(data) > 0 else 0
+    except:
+        return data.iloc[-1] if len(data) > 0 else 0
+
+def get_earnings_calendar(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        earnings = stock.earnings_dates
+        if earnings is not None and not earnings.empty:
+            future_earnings = earnings[earnings.index > datetime.now()]
+            if not future_earnings.empty:
+                next_earnings = future_earnings.index[0]
+                return next_earnings
+        return None
+    except:
+        return None
+
+def get_earnings_estimate(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        return {
+            'next_earnings': info.get('earningsDate', None),
+            'eps_estimate': info.get('epsEstimate', None),
+        }
+    except:
+        return {}
+
+# =====================================================
+# LOGO (centered at top)
+# =====================================================
+
+st.markdown("""
+<div style="text-align:center;padding:0.5rem 0 0.25rem 0;">
+    <div class="logo-text">TrendSetter</div>
+    <div class="logo-sub">AI-Powered Investment Research</div>
+</div>
+""", unsafe_allow_html=True)
+
+# =====================================================
+# SIDEBAR - WITH SEARCH SUGGESTIONS + WATCHLIST
+# =====================================================
+
+watchlist = load_watchlist()
+
+with st.sidebar:
+    # Sidebar logo
+    st.markdown("""
+    <div class="sidebar-logo">
+        <span class="sidebar-logo-icon">📊</span>
+        <div>
+            <div class="sidebar-logo-text">TrendSetter</div>
+            <div class="sidebar-logo-sub">AI-Powered Research</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    st.markdown("### 🔍 Search")
+    
+    search_input = st.text_input("", placeholder="Type to search...", label_visibility="collapsed", key="stock_search")
+    
+    if search_input:
+        matches = []
+        for t, name in popular_stocks.items():
+            if search_input.upper() in t or search_input.lower() in name.lower():
+                matches.append((t, name))
+        
+        if matches:
+            selected_ticker = st.selectbox(
+                "Suggestions",
+                options=[t for t, n in matches],
+                format_func=lambda x: f"{x} - {popular_stocks[x]}",
+                key="suggestion_select",
+                label_visibility="collapsed"
+            )
+            st.session_state.selected_ticker = selected_ticker
+        else:
+            st.session_state.selected_ticker = search_input.upper()
+            st.caption(f"📌 Using: {search_input.upper()}")
+    else:
+        default_stocks = ["NVDA", "AAPL", "GOOGL", "TSLA", "MSFT", "AMZN", "META", "JPM"]
+        if st.session_state.selected_ticker and st.session_state.selected_ticker in default_stocks:
+            default_index = default_stocks.index(st.session_state.selected_ticker)
+        else:
+            default_index = 0
+        ticker = st.selectbox("Popular", default_stocks, index=default_index, key="popular_select", label_visibility="collapsed")
+        st.session_state.selected_ticker = ticker
+    
+    st.markdown("---")
+    
+    st.markdown("### ⏱️ Time Period")
+    timeframe_options = {
+        "1 Day": "1d",
+        "1 Week": "5d",
+        "1 Month": "1mo",
+        "3 Months": "3mo",
+        "6 Months": "6mo",
+        "1 Year": "1y",
+        "2 Years": "2y",
+        "5 Years": "5y",
+        "Multi-Timeframe (AI)": "multi"
+    }
+    period_label = st.selectbox("", list(timeframe_options.keys()), index=5, label_visibility="collapsed")
+    period = timeframe_options[period_label]
+    
+    st.markdown("---")
+    
+    st.markdown("### ⭐ Watchlist")
+    
+    if watchlist:
+        for wt in watchlist:
+            is_active = (wt == st.session_state.selected_ticker)
+            label = f"▶ {wt}" if is_active else wt
+            if st.button(label, key=f"watch_{wt}", use_container_width=True):
+                st.session_state.selected_ticker = wt
+                st.rerun()
+    
+    add_to_watch = st.text_input("", placeholder="Add ticker...", key="add_watch", label_visibility="collapsed")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("➕ Add", use_container_width=True):
+            if add_to_watch and add_to_watch.upper() not in watchlist:
+                watchlist.append(add_to_watch.upper())
+                save_watchlist(watchlist)
+                st.rerun()
+    with col2:
+        if st.button("🗑️ Remove", use_container_width=True):
+            if add_to_watch and add_to_watch.upper() in watchlist:
+                watchlist.remove(add_to_watch.upper())
+                save_watchlist(watchlist)
+                st.rerun()
+    
+    st.markdown("---")
+    
+    st.markdown("### 🤖 AI Agents")
+    st.markdown("""
+    <div style="display:flex;flex-direction:column;gap:4px;font-size:0.85rem;">
+        <div><span class="status-dot active"></span> <span style="color:#8892B0;">Technical</span> <span style="color:#00D4AA;float:right;">Active</span></div>
+        <div><span class="status-dot active"></span> <span style="color:#8892B0;">Fundamental</span> <span style="color:#00D4AA;float:right;">Active</span></div>
+        <div><span class="status-dot active"></span> <span style="color:#8892B0;">Sentiment</span> <span style="color:#00D4AA;float:right;">Active</span></div>
+        <div><span class="status-dot active"></span> <span style="color:#8892B0;">Orchestrator</span> <span style="color:#00D4AA;float:right;">Active</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    api_status = "✅" if os.getenv('ANTHROPIC_API_KEY') else "❌"
+    news_status = "✅" if os.getenv('NEWS_API_KEY') else "❌"
+    st.markdown(f"""
+    <div style="display:flex;flex-direction:column;gap:2px;font-size:0.75rem;color:#8892B0;">
+        <div>API: {api_status} Claude • {news_status} News</div>
+        <div>📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.caption("⚠️ Educational purposes only.")
